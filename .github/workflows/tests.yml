@@ -1,0 +1,35 @@
+name: tests
+on: [push, pull_request, workflow_dispatch]
+
+# Both architectures: the secret memory (natrium's gossamer) and secp256k1-fast's limb
+# code differ per platform.
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: wax
+
+      # The transitive set of sibling repos.  When it goes stale the failure is
+      # "Component X not found".
+      - name: Sibling checkouts
+        run: |
+          for repo in natrium secp256k1-fast json-simple; do
+            git clone --depth 1 -q https://github.com/modus-lisp/$repo.git "$repo"
+          done
+
+      - name: Install SBCL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+
+      - name: Tests
+        run: |
+          sbcl --non-interactive --no-userinit \
+               --eval '(require :asdf)' \
+               --eval '(dolist (d (list "natrium/" "secp256k1-fast/" "json-simple/" "wax/"))
+                         (push (merge-pathnames d (uiop:getcwd)) asdf:*central-registry*))' \
+               --eval '(asdf:test-system :wax)'
