@@ -30,9 +30,10 @@ On a transport that authenticates nothing (TCP, a relay), each request carries a
 - the method;
 - the request id;
 - the SHA-256 of the exact params;
-- the signer it's addressed to.
+- the signer it's addressed to;
+- a sequence number.
 
-Each envelope is accepted once, within a skew window of the signer's own clock. Seeing an envelope on the wire gives an attacker nothing to reuse.
+There's no clock. `created_at` is ignored; instead each caller's sequence number must exceed the last one accepted from that caller, so an envelope is good once and old ones can't be replayed. The only state is one integer per known caller, and `(make-sequence-store path)` keeps it across restarts. Seeing an envelope on the wire gives an attacker nothing to reuse.
 
 ## Secrets
 

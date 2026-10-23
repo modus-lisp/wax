@@ -18,6 +18,7 @@
    #:role-public-key #:role-npub-hex
    ;; envelopes
    #:make-envelope #:verify-envelope #:+envelope-kind+
+   #:make-sequence-store #:sequence-store
    ;; handler
    #:handle-request #:*approve-fn*
    #:wax-error #:wax-error-code))

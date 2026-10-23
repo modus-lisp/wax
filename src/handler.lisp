@@ -75,7 +75,10 @@ no human is available, so :approve roles are denied.  On a board this is a butto
          (call-with-role-key keep role (lambda (key) (sign-event ev key)))))
       (t (%fail 5000 "unknown method ~s" method)))))
 
-(defun handle-request (keep request &key transport-caller keep-id replay-cache (skew 30) (now (%unix-now)))
+(defun %known-caller-p (keep caller)
+  (some (lambda (r) (member caller (role-callers r) :test #'equal)) (keep-roles keep)))
+
+(defun handle-request (keep request &key transport-caller keep-id sequences)
   "Process REQUEST (parsed JSON object).  Returns the response object; never signals
 for a bad request -- errors become {\"error\": {code, message}}."
   (let ((id (and (hash-table-p request) (gethash "id" request))))
@@ -89,10 +92,10 @@ for a bad request -- errors become {\"error\": {code, message}}."
                            (error () (%fail 1003 "params are not JSON"))))
                  (envelope (gethash "envelope" request))
                  (caller (cond (envelope
-                                (unless (and keep-id replay-cache)
+                                (unless (and keep-id sequences)
                                   (%fail 1004 "this transport cannot check envelopes"))
-                                (verify-envelope envelope method id params-text keep-id replay-cache
-                                                 :skew skew :now now))
+                                (verify-envelope envelope method id params-text keep-id sequences
+                                                 :known (lambda (c) (%known-caller-p keep c))))
                                (t transport-caller))))
             (unless (hash-table-p params) (%fail 1005 "params must be an object"))
             (%ht "id" id "result" (%dispatch keep caller method params))))

@@ -96,7 +96,8 @@ line" "tags" (vector (vector "t" "wax"))) k)))
 
 (defun test-keep-and-handler ()
   (let ((keep (wax:open-keep *m*))
-        (cache (wax::make-replay-cache))
+        (cache (wax:make-sequence-store))
+        (seq 0)
         (keep-id (make-string 64 :initial-element #\a))
         (caller-key (wax:copy-into-secret (unhex "c15d739894c81a2fcfd3a2df85a0d2c0dbc47a280d092799f144d73d7ae78add")))
         (caller-pub "d41b22899549e1f3d335a31002cfd382174006e166d3e658e3a5eecdb6463573"))
@@ -109,11 +110,11 @@ line" "tags" (vector (vector "t" "wax"))) k)))
              (let ((text (json-simple:stringify params)))
                (wax:handle-request keep (apply #'ht "id" id "method" method "params" text
                                                (and envelope (list "envelope" (funcall envelope method id text))))
-                                   :transport-caller caller :keep-id keep-id :replay-cache cache)))
-           (env (&key (method nil) (now nil) (keep nil) (payload nil))
+                                   :transport-caller caller :keep-id keep-id :sequences cache)))
+           (env (&key (method nil) (keep nil) (payload nil) (seq* nil))
              (lambda (m id text)
                (wax:make-envelope caller-key (or method m) id (or payload text) (or keep keep-id)
-                                  :now (or now (wax::%unix-now))))))
+                                  (or seq* (incf seq))))))
       (let ((ev (ht "kind" 1 "created_at" 1700000000 "content" "x" "tags" #())))
         (check "role pubkey is NIP-06's"
                (equal (gethash "result" (req "get_public_key" (ht "role" "main") :caller "uid:1000"))
@@ -132,15 +133,38 @@ line" "tags" (vector (vector "t" "wax"))) k)))
         (let ((r (req "sign_event" (ht "role" "bot" "event" ev) :envelope (env) :id "e1")))
           (check "envelope-authenticated auto role signs" (wax:verify-event (gethash "result" r))))
         (let* ((params (ht "role" "bot" "event" ev)) (text (json-simple:stringify params))
-               (e (wax:make-envelope caller-key "sign_event" "e2" text keep-id))
+               (e (wax:make-envelope caller-key "sign_event" "e2" text keep-id (incf seq) :created-at 1))
                (r1 (wax:handle-request keep (ht "id" "e2" "method" "sign_event" "params" text "envelope" e)
-                                       :keep-id keep-id :replay-cache cache))
+                                       :keep-id keep-id :sequences cache))
                (r2 (wax:handle-request keep (ht "id" "e2" "method" "sign_event" "params" text "envelope" e)
-                                       :keep-id keep-id :replay-cache cache)))
-          (check "first use of an envelope accepted" (gethash "result" r1))
+                                       :keep-id keep-id :sequences cache)))
+          (check "first use of an envelope accepted, whatever its created_at" (gethash "result" r1))
           (check "replayed envelope refused" (eql 4010 (err-code r2))))
-        (check "stale envelope refused"
-               (eql 4009 (err-code (req "sign_event" (ht "role" "bot" "event" ev) :envelope (env :now (- (wax::%unix-now) 120)) :id "e3"))))
+        (check "envelope with an old sequence number refused"
+               (eql 4010 (err-code (req "sign_event" (ht "role" "bot" "event" ev) :envelope (env :seq* 1) :id "e3"))))
+        (check "sequence numbers may skip"
+               (gethash "result" (req "sign_event" (ht "role" "bot" "event" ev) :envelope (env :seq* (incf seq 1000)) :id "e3b")))
+        (let* ((stranger (wax:copy-into-secret (unhex "0000000000000000000000000000000000000000000000000000000000000003")))
+               (text (json-simple:stringify (ht)))
+               (r (wax:handle-request keep (ht "id" "s1" "method" "ping" "params" text
+                                               "envelope" (wax:make-envelope stranger "ping" "s1" text keep-id 1))
+                                      :keep-id keep-id :sequences cache)))
+          (check "unknown caller refused and not remembered"
+                 (and (eql 5001 (err-code r)) (= 1 (hash-table-count (wax::sequence-store-last cache))))))
+        (let* ((path (merge-pathnames (format nil "wax-seq-~d.txt" (random 1000000)) (uiop:temporary-directory)))
+               (a (wax:make-sequence-store path))
+               (text (json-simple:stringify (ht))))
+          (unwind-protect
+               (progn
+                 (wax:handle-request keep (ht "id" "p1" "method" "ping" "params" text
+                                              "envelope" (wax:make-envelope caller-key "ping" "p1" text keep-id 7))
+                                     :keep-id keep-id :sequences a)
+                 (let ((b (wax:make-sequence-store path)))
+                   (check "sequence marks survive a restart"
+                          (eql 4010 (err-code (wax:handle-request keep (ht "id" "p2" "method" "ping" "params" text
+                                                                           "envelope" (wax:make-envelope caller-key "ping" "p2" text keep-id 7))
+                                                                  :keep-id keep-id :sequences b))))))
+            (ignore-errors (delete-file path))))
         (check "envelope for another method refused"
                (eql 4005 (err-code (req "sign_event" (ht "role" "bot" "event" ev) :envelope (env :method "ping") :id "e4"))))
         (check "envelope for another signer refused"
